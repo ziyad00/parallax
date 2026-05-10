@@ -6,7 +6,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from .core import Unit, group_by_resource_set
+from .config import Config, load_config
+from .core import Cluster, Unit, group_by_resource_set
 from .extractors import BUILTIN_EXTRACTORS
 from .reporters import render_html, render_json, render_sarif, render_text
 
@@ -31,22 +32,26 @@ def _build_argparser() -> argparse.ArgumentParser:
         "-e",
         action="append",
         choices=sorted(BUILTIN_EXTRACTORS),
+        help="Which extractor to run. Repeat to combine. Default: all.",
+    )
+    scan.add_argument(
+        "--config",
+        "-c",
+        type=Path,
         help=(
-            "Which extractor to run. Repeat to combine multiple extractors. "
-            "Default: all built-in extractors."
+            "Path to a config file (TOML). If omitted, parallax looks for "
+            ".parallax.toml in the working directory."
         ),
     )
     scan.add_argument(
         "--min-resources",
         type=int,
-        default=2,
-        help="Minimum distinct resources before a cluster is reported. Default 2.",
+        help="Override config.scan.min_resources.",
     )
     scan.add_argument(
         "--min-cluster-size",
         type=int,
-        default=2,
-        help="Minimum members in a cluster before it's reported. Default 2.",
+        help="Override config.scan.min_cluster_size.",
     )
     scan.add_argument(
         "--format",
@@ -61,11 +66,19 @@ def _build_argparser() -> argparse.ArgumentParser:
         type=Path,
         help="Write output to FILE instead of stdout.",
     )
-    # Back-compat shortcut for `--format json`
     scan.add_argument(
         "--json",
         action="store_true",
         help="Shortcut for --format json.",
+    )
+    scan.add_argument(
+        "--ci",
+        action="store_true",
+        help=(
+            "CI mode: exit non-zero only if a cluster exceeds "
+            "config.ci.max_cluster_size. Without this flag, any cluster "
+            "produces exit 1."
+        ),
     )
 
     sub.add_parser("list-extractors", help="Print the extractors built into parallax.")
@@ -73,10 +86,39 @@ def _build_argparser() -> argparse.ArgumentParser:
     return p
 
 
+def _apply_overrides(args: argparse.Namespace, cfg: Config) -> Config:
+    """CLI flags trump config-file values when given."""
+    if args.min_resources is not None:
+        cfg.min_resources = args.min_resources
+    if args.min_cluster_size is not None:
+        cfg.min_cluster_size = args.min_cluster_size
+    return cfg
+
+
+def _filter_ignored(
+    clusters: list[Cluster], cfg: Config
+) -> tuple[list[Cluster], list[Cluster]]:
+    """Split clusters into (kept, ignored)."""
+    kept: list[Cluster] = []
+    ignored: list[Cluster] = []
+    for c in clusters:
+        if cfg.matches_ignore(c.resources) is not None:
+            ignored.append(c)
+        else:
+            kept.append(c)
+    return kept, ignored
+
+
 def cmd_scan(args: argparse.Namespace) -> int:
     if not args.path.exists():
         print(f"error: {args.path} does not exist", file=sys.stderr)
         return 2
+
+    # Look for .parallax.toml relative to cwd (the convention of most
+    # linters / formatters). Don't anchor on args.path — that may be a
+    # subdir of the repo whose config lives at the root.
+    cfg = load_config(args.config)
+    cfg = _apply_overrides(args, cfg)
 
     extractor_names: list[str] = args.extractor or sorted(BUILTIN_EXTRACTORS)
     units: list[Unit] = []
@@ -86,34 +128,35 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
     clusters = group_by_resource_set(
         units,
-        min_resources=args.min_resources,
-        min_cluster_size=args.min_cluster_size,
+        min_resources=cfg.min_resources,
+        min_cluster_size=cfg.min_cluster_size,
     )
+    kept, ignored = _filter_ignored(clusters, cfg)
 
     fmt = "json" if args.json else args.format
     if fmt == "text":
         output = render_text(
-            clusters,
+            kept,
             scanned_units=len(units),
             extractors=extractor_names,
-            min_resources=args.min_resources,
-            min_cluster_size=args.min_cluster_size,
+            min_resources=cfg.min_resources,
+            min_cluster_size=cfg.min_cluster_size,
         )
+        if ignored:
+            output += f"\n({len(ignored)} cluster(s) suppressed by ignore rules)\n"
     elif fmt == "json":
-        output = render_json(clusters, scanned_units=len(units))
+        output = render_json(kept, scanned_units=len(units))
     elif fmt == "html":
         output = render_html(
-            clusters,
+            kept,
             scanned_units=len(units),
             extractors=extractor_names,
-            min_resources=args.min_resources,
-            min_cluster_size=args.min_cluster_size,
+            min_resources=cfg.min_resources,
+            min_cluster_size=cfg.min_cluster_size,
         )
     elif fmt == "sarif":
-        output = render_sarif(
-            clusters, scanned_units=len(units), extractors=extractor_names
-        )
-    else:  # pragma: no cover — argparse choices guard this
+        output = render_sarif(kept, scanned_units=len(units), extractors=extractor_names)
+    else:  # pragma: no cover
         raise ValueError(f"unknown format: {fmt}")
 
     if args.output:
@@ -123,7 +166,19 @@ def cmd_scan(args: argparse.Namespace) -> int:
         if not output.endswith("\n"):
             sys.stdout.write("\n")
 
-    return 0 if not clusters else 1
+    return _exit_code(kept, cfg, args.ci)
+
+
+def _exit_code(kept: list[Cluster], cfg: Config, ci_mode: bool) -> int:
+    if ci_mode:
+        # CI gate: fail only when a cluster crosses the configured size.
+        if cfg.max_cluster_size is None:
+            return 0
+        if any(c.size >= cfg.max_cluster_size for c in kept):
+            return 1
+        return 0
+    # Default: any cluster is non-zero, no clusters is zero.
+    return 0 if not kept else 1
 
 
 def cmd_list_extractors(_: argparse.Namespace) -> int:
