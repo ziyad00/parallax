@@ -1,11 +1,20 @@
-"""parallax — find code that does the same logical job through different paths.
+"""parallax: find code that does the same logical job through different paths."""
 
-Language-, unit-, and resource-agnostic. Pluggable extractors per
-framework / domain / language; a common grouping engine.
-"""
-
-from .core import Unit, Cluster, group_by_resource_set
+from .core import (
+    Cluster,
+    FoldedGroup,
+    Unit,
+    fold_units_by_class,
+    group_by_resource_set,
+)
 from .extractors.base import Extractor
 
-__all__ = ["Unit", "Cluster", "group_by_resource_set", "Extractor"]
-__version__ = "0.2.0"
+__all__ = [
+    "Cluster",
+    "Extractor",
+    "FoldedGroup",
+    "Unit",
+    "fold_units_by_class",
+    "group_by_resource_set",
+]
+__version__ = "0.3.0"

@@ -1,16 +1,8 @@
-"""SQLAlchemy ORM extractor — one of several shipping extractors.
+"""SQLAlchemy ORM extractor.
 
-Treats every Python class inheriting from ``Base`` as a "resource."
-For each function/method in the source tree, the unit's resource set is
-the set of model class names it references.
-
-Two functions joining the same set of tables therefore land in the same
-cluster, even if they look different on the surface (different filters,
-different return shapes, different field names).
-
-This was the original motivating extractor — it surfaced architectural
-duplication that token-similarity tools (jscpd, pylint duplicate-code)
-had already passed clean.
+Resources are classes inheriting from a declarative ``Base``. Each
+function or method emits a :class:`~parallax.core.Unit` whose
+resource set is the model classes it references.
 """
 
 from __future__ import annotations
@@ -55,10 +47,6 @@ class SqlAlchemyExtractor(Extractor):
         if not models:
             return []
         return list(self._scan(root, models))
-
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
 
     def _walk(self, root: Path) -> Iterator[Path]:
         for p in root.rglob("*.py"):

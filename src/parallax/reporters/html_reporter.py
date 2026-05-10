@@ -1,8 +1,7 @@
-"""HTML reporter — a self-contained, single-page report.
+"""HTML reporter.
 
-Output is a single ``.html`` file that opens in any browser. No external
-assets or scripts are loaded — everything is inline. Designed for
-artifact upload from CI (e.g. GitHub Actions ``actions/upload-artifact``).
+Renders a single self-contained HTML file (CSS inline, no external
+assets) suitable for CI artifact upload.
 """
 
 from __future__ import annotations
@@ -78,7 +77,7 @@ def render_html(
     )
 
     if not clusters:
-        body_parts.append("<div class='empty'>No clusters found. ✨</div>")
+        body_parts.append("<div class='empty'>No clusters found.</div>")
     else:
         for c in clusters:
             resources = ", ".join(html.escape(r) for r in sorted(c.resources))

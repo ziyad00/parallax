@@ -1,4 +1,4 @@
-"""JSON reporter — machine-readable output for downstream tooling."""
+"""JSON output."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ def render_json(
                 "resources": sorted(c.resources),
                 "size": c.size,
                 "score": round(c.score, 4),
+                "name_similarity": round(c.name_similarity, 4),
                 "is_cross_file": c.is_cross_file,
                 "units": [
                     {

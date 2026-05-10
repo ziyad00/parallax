@@ -1,4 +1,4 @@
-"""Extractors — pluggable resource detectors per framework / domain / language."""
+"""Resource extractors."""
 
 from .base import Extractor
 from .django_models import DjangoExtractor
