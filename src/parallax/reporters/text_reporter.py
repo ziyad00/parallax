@@ -23,7 +23,9 @@ def render_text(
         "",
     ]
     for c in clusters:
-        lines.append(f"--- {sorted(c.resources)}  (+{c.size} units) ---")
+        lines.append(
+            f"--- {sorted(c.resources)}  (+{c.size} units, score {c.score:.2f}) ---"
+        )
         for u in c.units:
             lang = f"[{u.language}] " if u.language else ""
             lines.append(f"    {lang}{u.location}::{u.name}")

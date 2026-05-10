@@ -20,6 +20,8 @@ def render_json(
             {
                 "resources": sorted(c.resources),
                 "size": c.size,
+                "score": round(c.score, 4),
+                "is_cross_file": c.is_cross_file,
                 "units": [
                     {
                         "location": u.location,

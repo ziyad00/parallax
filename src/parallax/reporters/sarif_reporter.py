@@ -73,6 +73,8 @@ def render_sarif(
             "properties": {
                 "resources": sorted(cluster.resources),
                 "clusterSize": cluster.size,
+                "score": round(cluster.score, 4),
+                "isCrossFile": cluster.is_cross_file,
             },
         }
         results.append(result)

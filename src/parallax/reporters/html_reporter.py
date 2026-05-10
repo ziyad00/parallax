@@ -85,7 +85,9 @@ def render_html(
             body_parts.append("<div class='cluster'>")
             body_parts.append("  <header>")
             body_parts.append(f"    <span class='tags'>[{resources}]</span>")
-            body_parts.append(f"    <span class='size'>{c.size} units</span>")
+            body_parts.append(
+                f"    <span class='size'>{c.size} units · score {c.score:.2f}</span>"
+            )
             body_parts.append("  </header>")
             body_parts.append("  <ul>")
             for u in c.units:

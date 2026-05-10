@@ -1,20 +1,21 @@
-"""Core data model and grouping logic.
+"""Core data model + grouping/scoring engine.
 
-The shape is intentionally generic — language-agnostic, unit-agnostic,
-resource-agnostic. A Unit is any addressable piece of code (a function,
-method, class, file, module, container, or whole microservice). A
-Resource is any opaque identifier the unit touches (a database table,
-an HTTP endpoint, a file path, an env var, a Kafka topic, a config key,
-etc.).
+A :class:`Unit` is any addressable piece of code (function, method,
+file, microservice, ...) that touches a set of :class:`resources <str>`
+(database tables, HTTP endpoints, Redis keys, env vars, ...). Two
+units sharing the same resource set are doing the same logical job
+and surface as a :class:`Cluster`.
 
-Two units are considered candidates for consolidation when they touch
-the same resource set, regardless of language, framework, or how the
-underlying code is written.
+Each cluster is scored by *interestingness* — a function of cluster
+size, resource-set size, **resource rarity** (cluster discounting hub
+tables like ``User`` that are touched everywhere), and whether the
+cluster crosses file boundaries. The score sorts the report so the
+most actionable findings rise to the top.
 """
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Iterable
 
@@ -23,25 +24,16 @@ from typing import Iterable
 class Unit:
     """An addressable piece of code that touches some resources.
 
-    The granularity is up to the extractor. Examples:
-
-    - A Python function or method (extractor: python-sqlalchemy)
-    - A whole TypeScript module (extractor: ts-axios-calls)
-    - A Terraform resource block (extractor: terraform-aws)
-    - A whole microservice (extractor: docker-compose-services)
-    - A SQL view or stored procedure (extractor: postgres-views)
-
-    ``location`` is the human-readable address — typically
-    ``relative/path:line`` — used when reporting clusters.
-
-    ``resources`` is a frozen set of opaque identifiers. Two units
-    sharing this set are grouped together.
+    The granularity is up to the extractor (function, file, module).
+    ``location`` is the human-readable address (typically
+    ``relative/path:line``); ``resources`` is the frozen set of
+    opaque identifiers the unit touches.
     """
 
-    location: str  # e.g. "src/api/users.py:42"
-    name: str  # e.g. "UserService.find_active"
+    location: str
+    name: str
     resources: frozenset[str]
-    language: str = ""  # "python", "typescript", "go", "terraform", ...
+    language: str = ""
     extra: dict[str, str] = field(default_factory=dict)
 
 
@@ -51,10 +43,74 @@ class Cluster:
 
     resources: frozenset[str]
     units: list[Unit]
+    score: float = 0.0  # Filled in by ``group_by_resource_set``.
 
     @property
     def size(self) -> int:
         return len(self.units)
+
+    @property
+    def files(self) -> set[str]:
+        """Distinct file paths the cluster spans (everything before any ':')."""
+        return {u.location.split(":", 1)[0] for u in self.units}
+
+    @property
+    def is_cross_file(self) -> bool:
+        """True if this cluster spans more than one file."""
+        return len(self.files) > 1
+
+
+def _resource_frequencies(units: Iterable[Unit]) -> dict[str, float]:
+    """Per-resource frequency: fraction of units that reference it."""
+    units = list(units)
+    if not units:
+        return {}
+    total = len(units)
+    counts: Counter[str] = Counter()
+    for u in units:
+        for r in u.resources:
+            counts[r] += 1
+    return {r: c / total for r, c in counts.items()}
+
+
+def _cluster_score(
+    cluster: Cluster,
+    *,
+    freqs: dict[str, float],
+    cross_file_weight: float = 1.5,
+    same_file_weight: float = 0.4,
+) -> float:
+    """Interestingness score for a cluster.
+
+    The score combines four signals:
+
+    * **Size** — more co-occurring members is more suspicious.
+    * **Resource breadth** — clusters touching more distinct resources
+      are typically more meaningful (a 5-table cluster is rarer than
+      a 2-table one).
+    * **Rarity** — average ``1 - freq(t)`` across the cluster's
+      resources. Hub tables (touched by 80%+ of units) drag the
+      score down so generic ``[User, Place]``-style noise stops
+      dominating the report.
+    * **Cross-file factor** — clusters spanning multiple files are
+      multiplied up; clusters confined to one file are discounted
+      (likely a cohesive class, not duplication).
+
+    All weights are tuned for 'sensible defaults out of the box'; no
+    knobs are exposed in v0.2 to keep the CLI simple. Plug in custom
+    scoring functions if needed.
+    """
+    if not cluster.resources:
+        return 0.0
+    rarity = sum(1.0 - freqs.get(r, 0.0) for r in cluster.resources) / len(
+        cluster.resources
+    )
+    breadth = len(cluster.resources)
+    file_factor = cross_file_weight if cluster.is_cross_file else same_file_weight
+    # Squaring rarity makes hub tables (User, Place) penalise the
+    # cluster non-linearly. Without this, raw size compensates for
+    # universal tables and noisy clusters tie with specific ones.
+    return (rarity ** 2) * cluster.size * breadth * file_factor
 
 
 def group_by_resource_set(
@@ -62,22 +118,24 @@ def group_by_resource_set(
     *,
     min_resources: int = 1,
     min_cluster_size: int = 2,
+    cross_file_only: bool = False,
 ) -> list[Cluster]:
-    """Group units by their resource set; return non-trivial clusters.
+    """Group units by their resource set, score, and return clusters.
 
     ``min_resources`` filters out clusters whose resource set is too
-    small to be interesting (e.g. a single shared resource is often
-    generic — ``users`` table touched by 200 functions in any web app).
+    small to be interesting. ``min_cluster_size`` filters singletons.
+    ``cross_file_only`` (added in v0.2) drops clusters whose units all
+    live in one file — those are usually cohesive class methods, not
+    architectural duplication.
 
-    ``min_cluster_size`` filters single-unit "clusters" (not a
-    duplication candidate).
-
-    Result is sorted: largest clusters first, then by resource-set
-    size descending so deeper overlaps surface first.
+    Result is sorted by interestingness score, descending.
     """
+    units = list(units)
     by_resources: dict[frozenset[str], list[Unit]] = defaultdict(list)
     for unit in units:
         by_resources[unit.resources].append(unit)
+
+    freqs = _resource_frequencies(units)
 
     clusters: list[Cluster] = []
     for resources, members in by_resources.items():
@@ -85,7 +143,11 @@ def group_by_resource_set(
             continue
         if len(resources) < min_resources:
             continue
-        clusters.append(Cluster(resources=resources, units=members))
+        cluster = Cluster(resources=resources, units=members)
+        if cross_file_only and not cluster.is_cross_file:
+            continue
+        cluster.score = _cluster_score(cluster, freqs=freqs)
+        clusters.append(cluster)
 
-    clusters.sort(key=lambda c: (-c.size, -len(c.resources)))
+    clusters.sort(key=lambda c: (-c.score, -c.size, -len(c.resources)))
     return clusters
