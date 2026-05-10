@@ -1,5 +1,9 @@
 # parallax
 
+[![PyPI version](https://img.shields.io/pypi/v/parallax-scan.svg)](https://pypi.org/project/parallax-scan/)
+[![CI](https://github.com/ziyad00/parallax/actions/workflows/ci.yml/badge.svg)](https://github.com/ziyad00/parallax/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 > Find code that does the same logical job through different paths.
 > Language-, unit-, and resource-agnostic.
 
