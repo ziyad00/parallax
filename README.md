@@ -20,6 +20,7 @@ Both unit detection and resource detection are pluggable per **extractor**.
 |---|---|---|
 | `sqlalchemy` | Python function/method | SQLAlchemy ORM model classes |
 | `django` | Python function/method | Django ORM model classes |
+| `sequelize` | TypeScript / JS function/method | TypeORM `@Entity` / Sequelize `Model` classes (requires `[treesitter]` extra) |
 | `http-urls` | any text file | HTTP URL paths |
 | `env-vars` | any text file | Environment variable names |
 | `redis-keys` | any text file | Redis key namespaces |
@@ -28,6 +29,7 @@ Both unit detection and resource detection are pluggable per **extractor**.
 
 ```bash
 pip install parallax-scan
+pip install "parallax-scan[treesitter]"   # adds the sequelize extractor
 ```
 
 ## Usage

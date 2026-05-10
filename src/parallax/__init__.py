@@ -17,4 +17,4 @@ __all__ = [
     "fold_units_by_class",
     "group_by_resource_set",
 ]
-__version__ = "0.3.0"
+__version__ = "0.4.0"
