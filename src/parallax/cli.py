@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from .config import Config, load_config
 from .core import Cluster, Unit, group_by_resource_set
 from .extractors import BUILTIN_EXTRACTORS
 from .reporters import render_html, render_json, render_sarif, render_text
+from .verify import verify_cluster
 
 
 REPORTERS = {"text", "json", "html", "sarif"}
@@ -92,6 +94,22 @@ def _build_argparser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("list-extractors", help="Print the extractors built into parallax.")
+
+    verify = sub.add_parser(
+        "verify",
+        help="Read a cluster (JSON on stdin or --file) and run deeper analysis.",
+    )
+    verify.add_argument(
+        "--root",
+        type=Path,
+        default=Path("."),
+        help="Source root used to resolve unit locations. Default: cwd.",
+    )
+    verify.add_argument(
+        "--file",
+        type=Path,
+        help="Read the cluster JSON from FILE instead of stdin.",
+    )
 
     return p
 
@@ -190,6 +208,43 @@ def _exit_code(kept: list[Cluster], cfg: Config, ci_mode: bool) -> int:
     return 0 if not kept else 1
 
 
+def cmd_verify(args: argparse.Namespace) -> int:
+    raw = args.file.read_text(encoding="utf-8") if args.file else sys.stdin.read()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"error: invalid JSON: {e}", file=sys.stderr)
+        return 2
+
+    cluster: dict | None
+    if isinstance(payload, dict) and "units" in payload:
+        cluster = payload
+    elif isinstance(payload, dict) and "clusters" in payload and payload["clusters"]:
+        cluster = payload["clusters"][0]
+    else:
+        print(
+            "error: expected a cluster dict (with 'units') or a scan payload "
+            "(with 'clusters')",
+            file=sys.stderr,
+        )
+        return 2
+
+    results = verify_cluster(cluster, root=args.root)
+    if not results:
+        print("No applicable verifiers for this cluster.")
+        return 0
+
+    for r in results:
+        print(
+            f"verifier={r.verifier} "
+            f"recommendation={r.recommendation.value} "
+            f"mean_similarity={r.mean_similarity:.2f}"
+        )
+        for p in r.pairs:
+            print(f"  {p.score:.2f}  {p.a_location}  ~  {p.b_location}")
+    return 0
+
+
 def cmd_list_extractors(_: argparse.Namespace) -> int:
     for name, cls in sorted(BUILTIN_EXTRACTORS.items()):
         doc_first_line = (cls.__doc__ or "").strip().splitlines()[:1]
@@ -205,6 +260,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_scan(args)
     if args.command == "list-extractors":
         return cmd_list_extractors(args)
+    if args.command == "verify":
+        return cmd_verify(args)
     parser.error("unknown command")
     return 2
 
