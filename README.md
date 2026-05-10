@@ -72,11 +72,44 @@ parallax scan path/to/your/repo -e sqlalchemy -e http-urls
 # Filter the noise floor (skip clusters with too few distinct resources)
 parallax scan path/to/your/repo --min-resources 3
 
-# JSON output for piping into other tools
-parallax scan path/to/your/repo --json
+# Output formats: text (default), json, html, sarif
+parallax scan path/to/your/repo --format html -o report.html
+parallax scan path/to/your/repo --format sarif -o parallax.sarif
 ```
 
-The exit code is non-zero when clusters are found, so you can wire `parallax scan` into CI as a quality gate (with thresholds tuned per project).
+`--format sarif` produces a [SARIF v2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/) document that GitHub Code Scanning uploads via `actions/upload-sarif` — clusters render as PR annotations.
+
+## Config + CI mode
+
+Drop a `.parallax.toml` at your repo root:
+
+```toml
+[scan]
+min_resources = 3
+min_cluster_size = 2
+
+[ci]
+# Hard-fail the CI run only when a cluster has 5+ members.
+max_cluster_size = 5
+
+# Suppress clusters you've decided not to fix yet.
+[[ignore]]
+resources = ["User", "Place"]
+reason = "Generic — touched by 200 endpoints"
+
+[[ignore]]
+resources = ["session"]
+reason = "Session cache is intentionally accessed everywhere"
+```
+
+Then in CI:
+
+```bash
+parallax scan . --ci          # exit non-zero only past max_cluster_size
+parallax scan . --format sarif -o parallax.sarif
+```
+
+Without `--ci`, exit is non-zero on any cluster — fine for local runs and PR review, but too noisy for new pipelines. With `--ci`, parallax only fails when something exceeds the threshold you've agreed on.
 
 ## How it differs from existing tools
 
