@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-10
+### Added
+- **Cluster scoring** by interestingness — combines size, resource breadth, **resource rarity** (hub-table penalty), and a cross-file factor. The default sort surfaces specific architectural overlaps over generic hub-table noise. Score is included in JSON, HTML, and SARIF output.
+- **`--top N` flag** to limit the report to the N highest-scoring clusters.
+- **`--cross-file-only` flag** to drop clusters confined to a single file (typical of cohesive class methods, not duplication).
+- **redis-keys receiver allow-list** (`r`, `redis`, `cache`, `client`, `rdb`, `kv`, etc.) — eliminates false positives like `dict.get(...)`, `params.get(...)`, `config.set(...)` that pre-v0.2 misclassified as Redis ops. Audit on a real Python codebase showed those false positives dominated output. Custom allow-lists supported via `RedisKeysExtractor(receivers=...)`.
+
+### Changed
+- **`group_by_resource_set`** sorts by score (descending), then size, then resource count.
+
+### Discovered via
+- Audit run against circles-be 2026-05-10. See parallax issues #6, #7, #8.
+
 ## [0.1.0] — 2026-05-10
 ### Added
 - Initial release.

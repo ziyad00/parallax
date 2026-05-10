@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "parallax-scan"
-version = "0.1.0"
+version = "0.2.0"
 description = "Find functions that work on the same resource through different code paths — the architectural-duplication detector that token-similarity tools miss."
 readme = "README.md"
 requires-python = ">=3.10"
