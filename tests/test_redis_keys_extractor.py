@@ -45,9 +45,8 @@ def test_strict_key_mode_keeps_full_path(tmp_path):
 
 
 def test_dict_get_is_not_a_redis_op(tmp_path):
-    """The audit on circles-be showed dict.get / params.get / config.set
-    were being misclassified as Redis ops. Receiver-name gating must
-    eliminate those false positives."""
+    """``dict.get`` / ``params.get`` / ``config.set`` must not be matched
+    as Redis ops; receiver gating is what enforces this."""
     write(tmp_path, "handlers.py", '''
 def handler(params, config, my_dict):
     a = params.get("user_id")

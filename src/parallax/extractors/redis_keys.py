@@ -1,23 +1,10 @@
-"""Redis-key extractor — language-agnostic.
+"""Redis key extractor.
 
-For each text source file, the unit's resource set is the set of Redis
-key *prefixes* it reads from or writes to. Picks up calls like:
-
-- Python (``redis-py``, ``aioredis``, ``redis.asyncio``):
-  ``r.get("user:42:profile")``, ``await r.set("session:abc", ...)``,
-  ``client.hget("group:7", "members")``
-- JS / TS (``ioredis``, ``node-redis``):
-  ``await redis.get("key:..")``, ``redis.set("key:..", v)``
-- Go (``go-redis``): ``rdb.Get(ctx, "user:42")``
-- Generic ``GET key:foo``, ``SET key:bar`` in shell scripts.
-
-Keys are normalised by replacing dynamic path segments (numbers, UUIDs,
-``{var}`` placeholders, f-string expressions) with ``{id}`` so calls
-reading/writing the same logical key cluster together.
-
-The colon convention (``namespace:id:field``) is the most universal
-Redis key style, so the prefix-only mode keys on the leading
-namespace component (everything up to the first ``:``).
+Resources are Redis key namespaces (or full keys when ``prefix_only``
+is False). Recognised across Python redis clients, ioredis /
+node-redis, go-redis, and similar. Receiver names are gated by
+``DEFAULT_REDIS_RECEIVERS`` to avoid matching ``dict.get``,
+``params.get``, etc.
 """
 
 from __future__ import annotations
@@ -69,10 +56,6 @@ _REDIS_OPS = (
 )
 _REDIS_OPS_PATTERN = "|".join(_REDIS_OPS)
 
-# Default allow-list of receiver names that look like a Redis client.
-# We match ``<receiver>.<op>("key", ...)`` where ``<receiver>`` is one
-# of these. Adding ``await`` and other prefixes is fine — the regex is
-# anchored to the dot-call boundary, not the start of the line.
 DEFAULT_REDIS_RECEIVERS = frozenset({
     "r",
     "rdb",
@@ -94,12 +77,10 @@ DEFAULT_REDIS_RECEIVERS = frozenset({
 
 
 def _build_key_re(receivers: frozenset[str]) -> re.Pattern[str]:
-    """Build the pattern that gates redis-key extraction by receiver name.
+    """Compile the receiver-gated key-extraction pattern.
 
-    Without this gate, calls like ``params.get('foo')``, ``dict.set(...)``,
-    or ``set.add(...)`` would all be misclassified as Redis ops. The
-    audit on a real Python codebase showed these false positives
-    dominate the output.
+    The receiver allow-list prevents ``dict.get(...)`` /
+    ``params.get(...)`` from being misclassified as Redis ops.
     """
     receiver_alt = "|".join(sorted({re.escape(r) for r in receivers}, key=len, reverse=True))
     return re.compile(

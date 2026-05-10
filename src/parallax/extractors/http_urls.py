@@ -1,17 +1,8 @@
-"""Language-agnostic HTTP URL extractor.
+"""HTTP URL extractor.
 
-Treats each source file as a unit (no language parsing required) and
-its resource set as the URL paths it references. Works on Python, JS,
-TS, Go, Java, Ruby, shell, YAML, JSON, OpenAPI specs, Terraform, etc.
-
-Two files calling the same external HTTP endpoint cluster together,
-regardless of how the call is written (axios, requests, curl, fetch,
-http.Get, ...). Surfaces patterns like "five different services all
-talking to the same Stripe endpoint with their own retry policies."
-
-The path is what's compared, not the host — so ``GET /v1/charges``
-clusters across hosts. Strip the host or override
-:meth:`normalize_url` if you want stricter matching.
+Resources are URL paths (host stripped, dynamic segments collapsed).
+Each text file emits one :class:`~parallax.core.Unit` covering the
+URLs it references.
 """
 
 from __future__ import annotations
@@ -24,10 +15,6 @@ from ..core import Unit
 from .base import Extractor
 
 
-# Reasonable default — captures absolute and relative URL-like strings.
-# Tuned to skip false positives (file paths, Python module paths) by
-# requiring an http(s):// prefix or a leading slash followed by a
-# segment that doesn't look like a Windows path.
 _URL_RE = re.compile(
     r"""
     (?:
@@ -42,7 +29,6 @@ _URL_RE = re.compile(
 )
 
 
-# File extensions we read as plain text. Adding more is cheap.
 DEFAULT_TEXT_EXTENSIONS = {
     ".py", ".pyi",
     ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
@@ -50,7 +36,7 @@ DEFAULT_TEXT_EXTENSIONS = {
     ".sh", ".bash", ".zsh",
     ".yaml", ".yml", ".json", ".toml",
     ".tf", ".tfvars",
-    ".md",  # docs / runbooks often hardcode URLs
+    ".md",
 }
 
 DEFAULT_IGNORE_DIRS = {
@@ -111,26 +97,21 @@ class HttpUrlExtractor(Extractor):
                 )
 
     def normalize_url(self, raw: str) -> str:
-        """Reduce a raw URL match to the resource identifier we cluster on.
+        """Reduce a raw URL match to a stable path identifier.
 
-        Default: keep only the path component, normalize trailing slash,
-        and replace path parameters (e.g. ``/users/123``) with ``{id}``
-        so different concrete invocations of the same endpoint match.
+        Strips scheme + host, drops query/fragment, replaces numeric
+        path segments with ``{id}``, and removes any trailing slash.
         Override for stricter or looser matching.
         """
         path = raw
-        # Strip scheme + host to leave the path
         if "://" in path:
             after_host = path.split("://", 1)[1]
             slash = after_host.find("/")
             path = after_host[slash:] if slash >= 0 else "/"
-        # Strip query string + fragment
         for sep in "?#":
             if sep in path:
                 path = path.split(sep, 1)[0]
-        # Replace numeric path segments with {id} so /v1/foo/123 == /v1/foo/456
         path = re.sub(r"/\d+", "/{id}", path)
-        # Normalise trailing slash
         if path.endswith("/") and len(path) > 1:
             path = path[:-1]
         return path

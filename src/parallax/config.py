@@ -1,29 +1,4 @@
-"""Config file loader — ignore lists, per-extractor settings, CI thresholds.
-
-Looks for ``.parallax.toml`` (or a path passed via ``--config``) and
-returns a :class:`Config` the CLI consumes. Keeping this dead simple:
-TOML, no inheritance, no env-var interpolation.
-
-Example ``.parallax.toml``::
-
-    [scan]
-    min_resources = 3
-    min_cluster_size = 2
-
-    # Hard-fail the run if any cluster has 5+ members. Useful in CI.
-    [ci]
-    max_cluster_size = 4
-
-    # Suppress known clusters that aren't worth fixing yet.
-    [[ignore]]
-    resources = ["User", "Place"]
-    reason = "Place + User is touched by 200 endpoints; not architecturally interesting."
-
-    [[ignore]]
-    extractor = "redis-keys"
-    resources = ["session"]
-    reason = "Session cache is intentionally accessed everywhere."
-"""
+"""``.parallax.toml`` loader."""
 
 from __future__ import annotations
 
@@ -42,13 +17,7 @@ CONFIG_FILENAME = ".parallax.toml"
 
 @dataclass(frozen=True)
 class IgnoreRule:
-    """A rule that suppresses a cluster from results.
-
-    A rule matches when the cluster's resource set is exactly the
-    set listed in ``resources``. Optional ``extractor`` narrows the
-    match to clusters discovered by that extractor (currently a
-    best-effort hint based on the units' source files).
-    """
+    """Suppresses clusters whose resource set equals ``resources``."""
 
     resources: frozenset[str]
     extractor: str | None = None
@@ -59,7 +28,7 @@ class IgnoreRule:
 class Config:
     min_resources: int = 2
     min_cluster_size: int = 2
-    max_cluster_size: int | None = None  # CI gate: fail if any cluster ≥ this
+    max_cluster_size: int | None = None
     ignore: list[IgnoreRule] = field(default_factory=list)
 
     def matches_ignore(self, resources: frozenset[str]) -> IgnoreRule | None:
@@ -70,12 +39,8 @@ class Config:
 
 
 def load_config(path: Path | None = None, *, search_root: Path | None = None) -> Config:
-    """Load a Config from disk.
-
-    - If ``path`` is given, use it directly (raise if missing).
-    - Else search ``search_root`` (default ``cwd``) for ``.parallax.toml``.
-    - If nothing is found, return defaults.
-    """
+    """Load config from ``path`` or auto-discover ``.parallax.toml`` under
+    ``search_root`` (defaults to cwd). Returns defaults when no file is found."""
     config_path = _resolve_config_path(path, search_root)
     if config_path is None:
         return Config()

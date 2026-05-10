@@ -1,4 +1,4 @@
-"""Command-line interface for parallax."""
+"""parallax CLI."""
 
 from __future__ import annotations
 
@@ -18,10 +18,7 @@ REPORTERS = {"text", "json", "html", "sarif"}
 def _build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="parallax",
-        description=(
-            "Find code that does the same logical job through different paths. "
-            "Language-, unit-, and resource-agnostic."
-        ),
+        description="Find code that does the same logical job through different paths.",
     )
     sub = p.add_subparsers(dest="command", required=True)
 
@@ -74,29 +71,24 @@ def _build_argparser() -> argparse.ArgumentParser:
     scan.add_argument(
         "--cross-file-only",
         action="store_true",
-        help=(
-            "Drop clusters whose units all live in one file. Useful in "
-            "repository-pattern codebases where cohesive class methods "
-            "would otherwise dominate the report."
-        ),
+        help="Drop clusters whose units all live in one file.",
     )
     scan.add_argument(
         "--top",
         type=int,
         default=None,
-        help=(
-            "Limit the report to the N highest-scoring clusters. "
-            "Default: unbounded."
-        ),
+        help="Limit the report to the N highest-scoring clusters.",
+    )
+    scan.add_argument(
+        "--fold-threshold",
+        type=int,
+        default=5,
+        help="Collapse N+ methods of the same class into one row in text output. Set 0 to disable.",
     )
     scan.add_argument(
         "--ci",
         action="store_true",
-        help=(
-            "CI mode: exit non-zero only if a cluster exceeds "
-            "config.ci.max_cluster_size. Without this flag, any cluster "
-            "produces exit 1."
-        ),
+        help="Exit non-zero only when a cluster meets ci.max_cluster_size from config.",
     )
 
     sub.add_parser("list-extractors", help="Print the extractors built into parallax.")
@@ -132,9 +124,6 @@ def cmd_scan(args: argparse.Namespace) -> int:
         print(f"error: {args.path} does not exist", file=sys.stderr)
         return 2
 
-    # Look for .parallax.toml relative to cwd (the convention of most
-    # linters / formatters). Don't anchor on args.path — that may be a
-    # subdir of the repo whose config lives at the root.
     cfg = load_config(args.config)
     cfg = _apply_overrides(args, cfg)
 
@@ -162,6 +151,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
             extractors=extractor_names,
             min_resources=cfg.min_resources,
             min_cluster_size=cfg.min_cluster_size,
+            fold_threshold=max(0, args.fold_threshold),
         )
         if ignored:
             output += f"\n({len(ignored)} cluster(s) suppressed by ignore rules)\n"
@@ -192,13 +182,11 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
 def _exit_code(kept: list[Cluster], cfg: Config, ci_mode: bool) -> int:
     if ci_mode:
-        # CI gate: fail only when a cluster crosses the configured size.
         if cfg.max_cluster_size is None:
             return 0
         if any(c.size >= cfg.max_cluster_size for c in kept):
             return 1
         return 0
-    # Default: any cluster is non-zero, no clusters is zero.
     return 0 if not kept else 1
 
 

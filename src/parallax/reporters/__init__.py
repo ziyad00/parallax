@@ -1,4 +1,4 @@
-"""Reporters — render Cluster lists into different output formats."""
+"""Output formatters."""
 
 from .html_reporter import render_html
 from .json_reporter import render_json

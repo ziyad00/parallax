@@ -1,22 +1,9 @@
-"""Environment-variable extractor — language-agnostic.
+"""Environment-variable extractor.
 
-For each text source file, the unit's resource set is the set of
-environment variables the file reads. Catches files reading the same
-configuration values from different code, regardless of language.
-
-Picks up patterns like:
-
-- Python: ``os.environ['X']``, ``os.environ.get('X')``, ``os.getenv('X')``
-- JS / TS: ``process.env.X``, ``process.env['X']``, ``import.meta.env.X``
-- Go: ``os.Getenv("X")``, ``os.LookupEnv("X")``
-- Rust: ``std::env::var("X")``
-- Shell: ``$X``, ``${X}``, ``$ENV{X}``
-- Docker / compose / k8s: ``${X}`` placeholders
-- Terraform: ``var.X``? — out of scope here, see a future TF extractor
-
-Two services reading the same set of env vars are likely doing related
-work (one of them duplicating the other's wiring). Surfaces config
-sprawl, missing centralisation of secrets / endpoints / feature flags.
+Resources are environment variable names read by the file. Patterns
+cover Python (``os.environ`` / ``os.getenv``), JS/TS (``process.env``
+/ ``import.meta.env``), Go (``os.Getenv`` / ``os.LookupEnv``), Rust
+(``env::var``), and shell (``$NAME`` / ``${NAME}``).
 """
 
 from __future__ import annotations
@@ -34,24 +21,17 @@ from .http_urls import (
 )
 
 
-# Patterns are ordered most-specific first to avoid false positives.
 _PATTERNS: list[re.Pattern[str]] = [
-    # Python: os.environ["FOO"] / os.environ.get("FOO") / os.getenv("FOO")
     re.compile(r"""os\.environ(?:\.get)?\s*[\(\[]\s*["']([A-Z_][A-Z0-9_]*)["']"""),
     re.compile(r"""os\.getenv\s*\(\s*["']([A-Z_][A-Z0-9_]*)["']"""),
-    # JS / TS: process.env.FOO / process.env["FOO"] / import.meta.env.FOO
     re.compile(r"""process\.env\.([A-Z_][A-Z0-9_]*)\b"""),
     re.compile(r"""process\.env\[\s*["']([A-Z_][A-Z0-9_]*)["']\s*\]"""),
     re.compile(r"""import\.meta\.env\.([A-Z_][A-Z0-9_]*)\b"""),
-    # Go: os.Getenv("FOO") / os.LookupEnv("FOO")
     re.compile(r"""os\.(?:Getenv|LookupEnv)\s*\(\s*["']([A-Z_][A-Z0-9_]*)["']"""),
-    # Rust: std::env::var("FOO")
     re.compile(r"""env::var\s*\(\s*["']([A-Z_][A-Z0-9_]*)["']"""),
-    # Shell-style ${FOO} or $FOO — only ALL_CAPS to skip $1, $#, etc.
+    # Restricted to ALL_CAPS names so $1, $#, $@ are skipped.
     re.compile(r"""\$\{([A-Z_][A-Z0-9_]*)\}"""),
     re.compile(r"""\$([A-Z_][A-Z0-9_]*)\b"""),
-    # Compose / k8s: env: - name: FOO  (YAML structural references)
-    # Skipped here; tracked separately if there's demand.
 ]
 
 

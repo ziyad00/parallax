@@ -1,11 +1,7 @@
-"""SARIF reporter — Static Analysis Results Interchange Format v2.1.0.
+"""SARIF v2.1.0 reporter.
 
-GitHub Code Scanning consumes SARIF and renders findings as PR
-annotations and a security tab. Each cluster becomes a SARIF *result*
-with a *kind* of ``review`` and one location per unit.
-
-Spec: https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
-GitHub upload: actions/upload-sarif (or sarif-action).
+Each cluster becomes a SARIF result with rule ``PARA001``. Suitable
+for upload via ``actions/upload-sarif``.
 """
 
 from __future__ import annotations
@@ -38,11 +34,8 @@ def render_sarif(
             "shortDescription": {"text": "Multiple units touch the same resource set"},
             "fullDescription": {
                 "text": (
-                    "Two or more units (functions, files, modules) reference "
-                    "the same set of resources (database tables, HTTP "
-                    "endpoints, env vars, ...). They are likely doing the "
-                    "same logical job through different code paths and are "
-                    "candidates for consolidation."
+                    "Two or more units reference the same set of resources "
+                    "and are likely candidates for consolidation."
                 )
             },
             "defaultConfiguration": {"level": "note"},
@@ -55,14 +48,10 @@ def render_sarif(
         resources_label = ", ".join(sorted(cluster.resources))
         message = (
             f"{cluster.size} units share the resource set "
-            f"[{resources_label}]. Candidates for consolidation."
+            f"[{resources_label}]."
         )
-        # The first unit is the "primary" location; the rest are
-        # related locations.
         primary = cluster.units[0]
-        related = [
-            _location_for_unit(u) for u in cluster.units[1:]
-        ]
+        related = [_location_for_unit(u) for u in cluster.units[1:]]
         result = {
             "ruleId": "PARA001",
             "kind": "review",
@@ -104,7 +93,6 @@ def render_sarif(
 
 
 def _location_for_unit(unit) -> dict:
-    """Translate a Unit's ``location`` (``file:line``) to a SARIF location."""
     raw = unit.location
     file = raw
     line = 1

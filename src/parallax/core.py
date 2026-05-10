@@ -1,23 +1,17 @@
-"""Core data model + grouping/scoring engine.
+"""Core data model and grouping engine.
 
-A :class:`Unit` is any addressable piece of code (function, method,
-file, microservice, ...) that touches a set of :class:`resources <str>`
-(database tables, HTTP endpoints, Redis keys, env vars, ...). Two
-units sharing the same resource set are doing the same logical job
-and surface as a :class:`Cluster`.
-
-Each cluster is scored by *interestingness* — a function of cluster
-size, resource-set size, **resource rarity** (cluster discounting hub
-tables like ``User`` that are touched everywhere), and whether the
-cluster crosses file boundaries. The score sorts the report so the
-most actionable findings rise to the top.
+A :class:`Unit` is any addressable piece of code that touches a set
+of resources (database tables, HTTP endpoints, Redis keys, env vars,
+...). Units sharing the same resource set are grouped into a
+:class:`Cluster` and ranked by an interestingness score.
 """
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from typing import Iterable
+from difflib import SequenceMatcher
+from typing import Iterable, Union
 
 
 @dataclass(frozen=True)
@@ -44,6 +38,7 @@ class Cluster:
     resources: frozenset[str]
     units: list[Unit]
     score: float = 0.0  # Filled in by ``group_by_resource_set``.
+    name_similarity: float = 0.0  # 0..1 ; mean pairwise unit-name similarity.
 
     @property
     def size(self) -> int:
@@ -60,6 +55,23 @@ class Cluster:
         return len(self.files) > 1
 
 
+@dataclass(frozen=True)
+class FoldedGroup:
+    """A class+file grouping that folds N member methods into one report row.
+
+    Produced by :func:`fold_units_by_class` when a class contributes
+    many methods to a single cluster. The full member list is kept in
+    ``method_names`` so reporters can offer a drill-down.
+    """
+
+    file: str
+    class_name: str
+    method_count: int
+    method_names: list[str]
+    location: str  # ``file:lineno`` of the first method, for clickable hop-to.
+    language: str = ""
+
+
 def _resource_frequencies(units: Iterable[Unit]) -> dict[str, float]:
     """Per-resource frequency: fraction of units that reference it."""
     units = list(units)
@@ -73,32 +85,38 @@ def _resource_frequencies(units: Iterable[Unit]) -> dict[str, float]:
     return {r: c / total for r, c in counts.items()}
 
 
+def _name_similarity(units: list[Unit]) -> float:
+    """Mean pairwise similarity of unit names (0..1).
+
+    Names are stripped of class qualifiers first so a cluster of
+    repository methods compares on the method names, not the
+    (identical) class prefix.
+    """
+    if len(units) < 2:
+        return 0.0
+    short = [u.name.rsplit(".", 1)[-1] for u in units]
+    total = 0.0
+    pairs = 0
+    for i in range(len(short)):
+        for j in range(i + 1, len(short)):
+            total += SequenceMatcher(None, short[i], short[j]).ratio()
+            pairs += 1
+    return total / pairs if pairs else 0.0
+
+
 def _cluster_score(
     cluster: Cluster,
     *,
     freqs: dict[str, float],
     cross_file_weight: float = 1.5,
     same_file_weight: float = 0.4,
+    name_similarity_boost: float = 0.5,
 ) -> float:
     """Interestingness score for a cluster.
 
-    The score combines four signals:
-
-    * **Size** — more co-occurring members is more suspicious.
-    * **Resource breadth** — clusters touching more distinct resources
-      are typically more meaningful (a 5-table cluster is rarer than
-      a 2-table one).
-    * **Rarity** — average ``1 - freq(t)`` across the cluster's
-      resources. Hub tables (touched by 80%+ of units) drag the
-      score down so generic ``[User, Place]``-style noise stops
-      dominating the report.
-    * **Cross-file factor** — clusters spanning multiple files are
-      multiplied up; clusters confined to one file are discounted
-      (likely a cohesive class, not duplication).
-
-    All weights are tuned for 'sensible defaults out of the box'; no
-    knobs are exposed in v0.2 to keep the CLI simple. Plug in custom
-    scoring functions if needed.
+    Combines size, resource-set breadth, average resource rarity
+    (rarer co-occurrence = more interesting), a cross-file factor,
+    and an optional name-similarity bonus.
     """
     if not cluster.resources:
         return 0.0
@@ -110,7 +128,9 @@ def _cluster_score(
     # Squaring rarity makes hub tables (User, Place) penalise the
     # cluster non-linearly. Without this, raw size compensates for
     # universal tables and noisy clusters tie with specific ones.
-    return (rarity ** 2) * cluster.size * breadth * file_factor
+    base = (rarity ** 2) * cluster.size * breadth * file_factor
+    similarity_factor = 1.0 + cluster.name_similarity * name_similarity_boost
+    return base * similarity_factor
 
 
 def group_by_resource_set(
@@ -120,15 +140,12 @@ def group_by_resource_set(
     min_cluster_size: int = 2,
     cross_file_only: bool = False,
 ) -> list[Cluster]:
-    """Group units by their resource set, score, and return clusters.
+    """Group units by their resource set and return scored clusters.
 
-    ``min_resources`` filters out clusters whose resource set is too
-    small to be interesting. ``min_cluster_size`` filters singletons.
-    ``cross_file_only`` (added in v0.2) drops clusters whose units all
-    live in one file — those are usually cohesive class methods, not
-    architectural duplication.
-
-    Result is sorted by interestingness score, descending.
+    ``min_resources`` filters clusters with too-small resource sets.
+    ``min_cluster_size`` filters singletons. ``cross_file_only``
+    drops clusters whose units all live in one file (typically a
+    cohesive class, not architectural duplication).
     """
     units = list(units)
     by_resources: dict[frozenset[str], list[Unit]] = defaultdict(list)
@@ -146,8 +163,58 @@ def group_by_resource_set(
         cluster = Cluster(resources=resources, units=members)
         if cross_file_only and not cluster.is_cross_file:
             continue
+        cluster.name_similarity = _name_similarity(members)
         cluster.score = _cluster_score(cluster, freqs=freqs)
         clusters.append(cluster)
 
     clusters.sort(key=lambda c: (-c.score, -c.size, -len(c.resources)))
     return clusters
+
+
+def fold_units_by_class(
+    units: list[Unit],
+    *,
+    threshold: int = 5,
+) -> list[Union[Unit, FoldedGroup]]:
+    """Collapse N+ methods of the same class into a single FoldedGroup row.
+
+    Methods below the threshold pass through unchanged. The original
+    ``Cluster.units`` list is not mutated.
+    """
+    if threshold < 2:
+        return list(units)
+
+    by_group: dict[tuple[str, str], list[Unit]] = defaultdict(list)
+    order: list[tuple[str, str]] = []
+    for u in units:
+        key = _class_file_key(u)
+        if key not in by_group:
+            order.append(key)
+        by_group[key].append(u)
+
+    out: list[Union[Unit, FoldedGroup]] = []
+    for key in order:
+        members = by_group[key]
+        file_path, class_name = key
+        if class_name and len(members) >= threshold:
+            method_names = [m.name.rsplit(".", 1)[-1] for m in members]
+            out.append(
+                FoldedGroup(
+                    file=file_path,
+                    class_name=class_name,
+                    method_count=len(members),
+                    method_names=method_names,
+                    location=members[0].location,
+                    language=members[0].language,
+                )
+            )
+        else:
+            out.extend(members)
+    return out
+
+
+def _class_file_key(unit: Unit) -> tuple[str, str]:
+    """Return ``(file, class_name)``. ``class_name`` is empty for free functions."""
+    file_part = unit.location.split(":", 1)[0]
+    class_part = unit.name.rsplit(".", 1)[0] if "." in unit.name else ""
+    return (file_part, class_part)

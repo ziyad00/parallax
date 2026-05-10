@@ -1,4 +1,10 @@
-from parallax.core import Cluster, Unit, group_by_resource_set
+from parallax.core import (
+    Cluster,
+    FoldedGroup,
+    Unit,
+    fold_units_by_class,
+    group_by_resource_set,
+)
 
 
 def make_unit(name: str, resources: set[str]) -> Unit:
@@ -32,8 +38,7 @@ def test_min_cluster_size_filters_singletons():
 
 
 def test_clusters_sorted_by_score_descending():
-    """v0.2: clusters sort by interestingness score (rarity x size x
-    breadth x cross-file factor), not raw size."""
+    """Clusters sort by interestingness score, not raw size."""
     # 3-member cluster of {X, Y} where X and Y appear in every unit
     # (no rarity advantage).
     big_a = make_unit("big_a", {"X", "Y"})
@@ -89,6 +94,49 @@ def test_cross_file_filter_drops_same_file_clusters():
     )
     assert len(clusters) == 1
     assert sorted(clusters[0].resources) == ["M", "N", "O"]
+
+
+def test_name_similarity_boosts_score():
+    similar = [
+        Unit(location="a.py:1", name="get_followers", resources=frozenset({"P", "Q"})),
+        Unit(location="b.py:1", name="list_followers", resources=frozenset({"P", "Q"})),
+        Unit(location="c.py:1", name="fetch_followers", resources=frozenset({"P", "Q"})),
+    ]
+    unrelated = [
+        Unit(location="x.py:1", name="compute_total", resources=frozenset({"M", "N"})),
+        Unit(location="y.py:1", name="mark_seen", resources=frozenset({"M", "N"})),
+        Unit(location="z.py:1", name="save_user", resources=frozenset({"M", "N"})),
+    ]
+    clusters = group_by_resource_set(similar + unrelated)
+    similar_cluster = next(c for c in clusters if "P" in c.resources)
+    unrelated_cluster = next(c for c in clusters if "M" in c.resources)
+    assert similar_cluster.name_similarity > unrelated_cluster.name_similarity
+    assert similar_cluster.score > unrelated_cluster.score
+
+
+def test_fold_units_by_class_collapses_when_threshold_reached():
+    units = [
+        Unit(location=f"repo.py:{i}", name=f"FooRepo.method_{i}", resources=frozenset({"X"}))
+        for i in range(6)
+    ]
+    units.append(
+        Unit(location="other.py:1", name="standalone", resources=frozenset({"X"}))
+    )
+    out = fold_units_by_class(units, threshold=5)
+    assert len(out) == 2
+    assert isinstance(out[0], FoldedGroup)
+    assert out[0].class_name == "FooRepo"
+    assert out[0].method_count == 6
+    assert isinstance(out[1], Unit)
+
+
+def test_fold_units_by_class_skips_below_threshold():
+    units = [
+        Unit(location="repo.py:1", name="FooRepo.a", resources=frozenset({"X"})),
+        Unit(location="repo.py:2", name="FooRepo.b", resources=frozenset({"X"})),
+    ]
+    out = fold_units_by_class(units, threshold=5)
+    assert all(isinstance(o, Unit) for o in out)
 
 
 def test_cluster_is_cross_file_property():

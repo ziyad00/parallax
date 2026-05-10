@@ -1,14 +1,9 @@
 """Django ORM extractor.
 
-Treats every Python class inheriting from ``models.Model`` (or
-``django.db.models.Model``) as a "resource." For each function or
-method in the source tree, the unit's resource set is the set of
-Django model class names it references.
-
-Mirrors :class:`SqlAlchemyExtractor` but for Django apps. Two views or
-managers querying the same set of models therefore land in the same
-cluster, even if the surface code differs (raw QuerySet, manager
-methods, get_object_or_404, etc.).
+Resources are classes inheriting from ``models.Model`` (or fully
+qualified ``django.db.models.Model``). Each function or method emits
+a :class:`~parallax.core.Unit` whose resource set is the model
+classes it references.
 """
 
 from __future__ import annotations
@@ -32,11 +27,8 @@ class DjangoExtractor(Extractor):
     name = "django"
 
     def __init__(self, *, ignore_dirs: set[str] | None = None) -> None:
-        # ``migrations/`` is the only Django-specific path worth filtering:
-        # migration files re-import models cosmetically and would inflate
-        # the cluster signal. ``fixtures/`` / ``static/`` / ``media/``
-        # are non-Python so the .py glob filters them anyway, and the
-        # ``fixtures`` name collides with test-fixture directories.
+        # ``migrations/`` is excluded because migration files re-import
+        # models cosmetically and inflate the signal.
         self.ignore_dirs = (ignore_dirs or DEFAULT_IGNORE_DIRS) | {"migrations"}
 
     def extract(self, root: Path) -> Iterable[Unit]:
@@ -77,40 +69,21 @@ class DjangoExtractor(Extractor):
 
 
 def _inherits_django_model(cls: ast.ClassDef) -> bool:
-    """True if any base looks like ``models.Model`` or ``Model``-derived.
-
-    Catches:
-    - class Foo(models.Model): ...
-    - class Foo(Model): ...                 (when ``Model`` is imported)
-    - class Foo(django.db.models.Model): ...
-    - class Foo(BaseModel, models.Model): ... (multiple bases)
-    """
-    for base in cls.bases:
-        if _base_is_django_model(base):
-            return True
-    return False
+    return any(_base_is_django_model(b) for b in cls.bases)
 
 
 def _base_is_django_model(node: ast.expr) -> bool:
-    if isinstance(node, ast.Name) and node.id in {"Model", "models"}:
-        # Bare ``Model`` could be Django; we accept it. Risk of false
-        # positive (e.g. pydantic's BaseModel). The cluster grouping
-        # filters via min_resources / min_cluster_size limits damage.
+    if isinstance(node, ast.Name):
         return node.id == "Model"
-    if isinstance(node, ast.Attribute):
-        # models.Model
-        if node.attr == "Model" and isinstance(node.value, ast.Name) and node.value.id == "models":
+    if isinstance(node, ast.Attribute) and node.attr == "Model":
+        if isinstance(node.value, ast.Name) and node.value.id == "models":
             return True
-        # django.db.models.Model
-        if node.attr == "Model":
-            return _is_models_attribute_chain(node.value)
+        return _is_models_attribute_chain(node.value)
     return False
 
 
 def _is_models_attribute_chain(node: ast.expr) -> bool:
-    """True if ``node`` resolves to the ``models`` submodule of django.db."""
     if isinstance(node, ast.Attribute) and node.attr == "models":
-        # x.models — accept if x looks like django.db
         return True
     if isinstance(node, ast.Name) and node.id == "models":
         return True
