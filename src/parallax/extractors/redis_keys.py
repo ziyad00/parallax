@@ -69,10 +69,43 @@ _REDIS_OPS = (
 )
 _REDIS_OPS_PATTERN = "|".join(_REDIS_OPS)
 
-_KEY_RE = re.compile(
-    rf"""\.\s*(?:{_REDIS_OPS_PATTERN})\s*\(\s*[fFrRbBuU]{{0,2}}[\"'`]([^\"'`]+)[\"'`]""",
-    re.IGNORECASE,
-)
+# Default allow-list of receiver names that look like a Redis client.
+# We match ``<receiver>.<op>("key", ...)`` where ``<receiver>`` is one
+# of these. Adding ``await`` and other prefixes is fine — the regex is
+# anchored to the dot-call boundary, not the start of the line.
+DEFAULT_REDIS_RECEIVERS = frozenset({
+    "r",
+    "rdb",
+    "redis",
+    "redis_client",
+    "client",
+    "cache",
+    "kv",
+    "conn",
+    "connection",
+    "_redis",
+    "_cache",
+    "self.redis",
+    "self.cache",
+    "self.client",
+    "self._redis",
+    "self._cache",
+})
+
+
+def _build_key_re(receivers: frozenset[str]) -> re.Pattern[str]:
+    """Build the pattern that gates redis-key extraction by receiver name.
+
+    Without this gate, calls like ``params.get('foo')``, ``dict.set(...)``,
+    or ``set.add(...)`` would all be misclassified as Redis ops. The
+    audit on a real Python codebase showed these false positives
+    dominate the output.
+    """
+    receiver_alt = "|".join(sorted({re.escape(r) for r in receivers}, key=len, reverse=True))
+    return re.compile(
+        rf"""(?:{receiver_alt})\s*\.\s*(?:{_REDIS_OPS_PATTERN})\s*\(\s*[fFrRbBuU]{{0,2}}[\"'`]([^\"'`]+)[\"'`]""",
+        re.IGNORECASE,
+    )
 
 
 class RedisKeysExtractor(Extractor):
@@ -86,10 +119,13 @@ class RedisKeysExtractor(Extractor):
         text_extensions: set[str] | None = None,
         ignore_dirs: set[str] | None = None,
         prefix_only: bool = True,
+        receivers: frozenset[str] | None = None,
     ) -> None:
         self.text_extensions = text_extensions or _SHARED_TEXT_EXT
         self.ignore_dirs = ignore_dirs or _SHARED_IGNORE
         self.prefix_only = prefix_only
+        self.receivers = receivers or DEFAULT_REDIS_RECEIVERS
+        self._key_re = _build_key_re(self.receivers)
 
     def extract(self, root: Path) -> Iterable[Unit]:
         return list(self._scan(root))
@@ -108,7 +144,7 @@ class RedisKeysExtractor(Extractor):
                 continue
 
             keys: set[str] = set()
-            for m in _KEY_RE.finditer(text):
+            for m in self._key_re.finditer(text):
                 keys.add(self.normalize_key(m.group(1)))
 
             if keys:

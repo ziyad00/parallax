@@ -72,6 +72,24 @@ def _build_argparser() -> argparse.ArgumentParser:
         help="Shortcut for --format json.",
     )
     scan.add_argument(
+        "--cross-file-only",
+        action="store_true",
+        help=(
+            "Drop clusters whose units all live in one file. Useful in "
+            "repository-pattern codebases where cohesive class methods "
+            "would otherwise dominate the report."
+        ),
+    )
+    scan.add_argument(
+        "--top",
+        type=int,
+        default=None,
+        help=(
+            "Limit the report to the N highest-scoring clusters. "
+            "Default: unbounded."
+        ),
+    )
+    scan.add_argument(
         "--ci",
         action="store_true",
         help=(
@@ -130,8 +148,11 @@ def cmd_scan(args: argparse.Namespace) -> int:
         units,
         min_resources=cfg.min_resources,
         min_cluster_size=cfg.min_cluster_size,
+        cross_file_only=args.cross_file_only,
     )
     kept, ignored = _filter_ignored(clusters, cfg)
+    if args.top is not None and args.top >= 0:
+        kept = kept[: args.top]
 
     fmt = "json" if args.json else args.format
     if fmt == "text":
