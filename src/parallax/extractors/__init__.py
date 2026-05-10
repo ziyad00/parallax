@@ -24,3 +24,11 @@ BUILTIN_EXTRACTORS: dict[str, type[Extractor]] = {
     "env-vars": EnvVarsExtractor,
     "redis-keys": RedisKeysExtractor,
 }
+
+try:
+    from .sequelize import SequelizeExtractor
+except ImportError:
+    pass
+else:
+    __all__.append("SequelizeExtractor")
+    BUILTIN_EXTRACTORS["sequelize"] = SequelizeExtractor
