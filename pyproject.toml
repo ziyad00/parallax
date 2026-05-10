@@ -13,6 +13,9 @@ authors = [
   { name = "Ziyad Alotaibi", email = "ziyad.alotaibe@gmail.com" }
 ]
 keywords = ["duplication", "static-analysis", "ast", "refactor", "code-quality"]
+dependencies = [
+  "tomli; python_version < '3.11'",
+]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "License :: OSI Approved :: MIT License",
@@ -23,7 +26,6 @@ classifiers = [
   "Topic :: Software Development :: Quality Assurance",
   "Intended Audience :: Developers",
 ]
-dependencies = []
 
 [project.optional-dependencies]
 dev = [
