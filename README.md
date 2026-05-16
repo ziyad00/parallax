@@ -22,6 +22,7 @@ Both unit detection and resource detection are pluggable per **extractor**.
 | `django` | Python function/method | Django ORM model classes |
 | `sequelize` | TypeScript / JS function/method | TypeORM `@Entity` / Sequelize `Model` classes (requires `[treesitter]` extra) |
 | `fastapi-routes` | Python function/method | FastAPI route path (resolves `APIRouter(prefix=...)` + `app.include_router(..., prefix=...)` across files) |
+| `dart-api-calls` | Dart string literal | URL templates resolved by substituting `${ClassName.member}` interpolations against `static [const] String member = '...';` / `static String member(...) => '...';` declarations elsewhere in the tree |
 | `http-urls` | any text file (incl. `.dart`) | HTTP URL paths (one Unit per file × URL; FastAPI `{param}` and Dart `$var` / `${var}` interpolation collapse to `{id}`) |
 | `env-vars` | any text file | Environment variable names |
 | `redis-keys` | any text file | Redis key namespaces |
