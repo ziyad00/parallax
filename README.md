@@ -44,6 +44,12 @@ parallax scan path/to/repo --min-resources 3 --top 20
 parallax scan path/to/repo --cross-file-only
 parallax scan path/to/repo --format html -o report.html
 parallax scan path/to/repo --format sarif -o parallax.sarif
+
+# axis-coverage: bucket code paths by which subset of a feature axis
+# they touch. Surfaces "this file handles DM and Group but forgot
+# Place chat" gaps that cross-cutting refactors keep regressing.
+parallax axis path/to/repo -e sqlalchemy \
+  --axis DMThread,GroupChat,PlaceChatMessage
 ```
 
 ## Configuration
