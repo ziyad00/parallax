@@ -1,6 +1,7 @@
 """Resource extractors."""
 
 from .base import Extractor
+from .dart_api_calls import DartApiCallExtractor
 from .django_models import DjangoExtractor
 from .env_vars import EnvVarsExtractor
 from .fastapi_routes import FastApiRoutesExtractor
@@ -10,6 +11,7 @@ from .sqlalchemy_models import SqlAlchemyExtractor
 
 __all__ = [
     "Extractor",
+    "DartApiCallExtractor",
     "DjangoExtractor",
     "EnvVarsExtractor",
     "FastApiRoutesExtractor",
@@ -23,6 +25,7 @@ BUILTIN_EXTRACTORS: dict[str, type[Extractor]] = {
     "sqlalchemy": SqlAlchemyExtractor,
     "django": DjangoExtractor,
     "fastapi-routes": FastApiRoutesExtractor,
+    "dart-api-calls": DartApiCallExtractor,
     "http-urls": HttpUrlExtractor,
     "env-vars": EnvVarsExtractor,
     "redis-keys": RedisKeysExtractor,
