@@ -58,6 +58,27 @@ DEFAULT_IGNORE_DIRS = {
 }
 
 
+# A URL that ends in one of these suffixes is almost certainly an import
+# path or relative file reference (e.g.
+# ``/scr/feature/profile/profile_viewmodel.dart``) and not a real HTTP
+# route. Filtering them out at extraction time keeps the cluster output
+# focused on cross-repo API drift.
+_SOURCE_FILE_SUFFIXES = (
+    ".dart", ".py", ".pyi",
+    ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    ".go", ".rs", ".java", ".kt", ".rb", ".php",
+    ".html", ".css", ".scss",
+)
+
+
+# Per-language single-line comment markers. The match's containing line
+# is inspected: if the first non-whitespace characters are one of these,
+# the match is discarded. This kills false positives like
+# ``// see /update/delete docs`` or ``# example: /foo/bar`` without
+# affecting real string literals on uncommented code lines.
+_COMMENT_LINE_PREFIXES = ("#", "//", "/*", "*")
+
+
 class HttpUrlExtractor(Extractor):
     """Find files that mention the same HTTP URL paths."""
 
@@ -95,8 +116,12 @@ class HttpUrlExtractor(Extractor):
             # SARIF reporters.
             first_line: dict[str, int] = {}
             for match in _URL_RE.finditer(text):
+                if _is_in_comment_line(text, match.start()):
+                    continue
                 resource = self.normalize_url(match.group(0))
-                if not resource or resource in first_line:
+                if not resource or _looks_like_source_file_path(resource):
+                    continue
+                if resource in first_line:
                     continue
                 first_line[resource] = text.count("\n", 0, match.start()) + 1
 
@@ -171,3 +196,60 @@ _SUFFIX_TO_LANG = {
 
 def _language_from_suffix(suffix: str) -> str:
     return _SUFFIX_TO_LANG.get(suffix, "")
+
+
+def _is_in_comment_line(text: str, match_start: int) -> bool:
+    """True if the match is inside a comment — either a whole-line
+    comment or a trailing comment on a code line.
+
+    Whole-line case: the line's first non-whitespace token is a comment
+    marker.
+
+    Trailing-line case: a comment marker (``//`` or ``#``) appears
+    between the line start and ``match_start``, outside a string
+    literal. Quote-pair counting is approximate but good enough for
+    the common ``final foo = "thing"; // /old/route`` shape.
+    """
+    line_start = text.rfind("\n", 0, match_start) + 1
+    line_end = text.find("\n", match_start)
+    if line_end < 0:
+        line_end = len(text)
+    line = text[line_start:line_end]
+    if line.lstrip().startswith(_COMMENT_LINE_PREFIXES):
+        return True
+    prefix = text[line_start:match_start]
+    return _prefix_has_unstrung_comment(prefix)
+
+
+def _prefix_has_unstrung_comment(prefix: str) -> bool:
+    """True if ``//`` or ``#`` appears in ``prefix`` outside any string
+    literal. Strings open and close on ``'`` and ``"`` (backslash-
+    escaped pairs ignored). Triple-quoted strings, raw strings, and
+    multi-line strings aren't handled — they'd need a real tokenizer
+    and are rare in URL-bearing source."""
+    in_str: str | None = None
+    i = 0
+    while i < len(prefix):
+        ch = prefix[i]
+        if in_str:
+            if ch == "\\" and i + 1 < len(prefix):
+                i += 2
+                continue
+            if ch == in_str:
+                in_str = None
+        else:
+            if ch in ("'", '"'):
+                in_str = ch
+            elif ch == "/" and i + 1 < len(prefix) and prefix[i + 1] == "/":
+                return True
+            elif ch == "#":
+                return True
+        i += 1
+    return False
+
+
+def _looks_like_source_file_path(resource: str) -> bool:
+    """Reject extracted paths that are import/file references rather
+    than HTTP routes — anything ending in a known source-file suffix
+    falls into this bucket."""
+    return resource.endswith(_SOURCE_FILE_SUFFIXES)
