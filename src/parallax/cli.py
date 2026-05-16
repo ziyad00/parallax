@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 
+from .axis_coverage import axis_coverage, render_axis_report
 from .config import Config, load_config
 from .core import Cluster, Unit, group_by_resource_set
 from .extractors import BUILTIN_EXTRACTORS
@@ -91,6 +92,37 @@ def _build_argparser() -> argparse.ArgumentParser:
         "--ci",
         action="store_true",
         help="Exit non-zero only when a cluster meets ci.max_cluster_size from config.",
+    )
+
+    axis = sub.add_parser(
+        "axis",
+        help=(
+            "Bucket units by which subset of an --axis they touch. Surfaces "
+            "parallel-path coverage gaps (e.g. 'this file handles DM and Group "
+            "but forgot Place chat')."
+        ),
+    )
+    axis.add_argument("path", type=Path, help="Root directory to scan.")
+    axis.add_argument(
+        "--extractor",
+        "-e",
+        action="append",
+        required=True,
+        choices=sorted(BUILTIN_EXTRACTORS),
+        help="Which extractor(s) to run. Repeat to combine.",
+    )
+    axis.add_argument(
+        "--axis",
+        required=True,
+        help=(
+            "Comma-separated resource names to group by. e.g. "
+            "'DMThread,GroupChat,PlaceChatMessage' for the chat trio."
+        ),
+    )
+    axis.add_argument(
+        "--ci",
+        action="store_true",
+        help="Exit non-zero if any partial-coverage group exists.",
     )
 
     sub.add_parser("list-extractors", help="Print the extractors built into parallax.")
@@ -253,11 +285,42 @@ def cmd_list_extractors(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_axis(args: argparse.Namespace) -> int:
+    if not args.path.exists():
+        print(f"error: {args.path} does not exist", file=sys.stderr)
+        return 2
+
+    axis = [s.strip() for s in args.axis.split(",") if s.strip()]
+    if len(axis) < 2:
+        print(
+            "error: --axis needs at least two comma-separated resource names",
+            file=sys.stderr,
+        )
+        return 2
+
+    units: list[Unit] = []
+    for name in args.extractor:
+        cls = BUILTIN_EXTRACTORS[name]
+        units.extend(cls().extract(args.path))
+
+    groups = axis_coverage(units, axis)
+    output = render_axis_report(groups, axis=axis, scanned_units=len(units))
+    sys.stdout.write(output)
+    if not output.endswith("\n"):
+        sys.stdout.write("\n")
+
+    if args.ci and any(not g.is_complete for g in groups):
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_argparser()
     args = parser.parse_args(argv)
     if args.command == "scan":
         return cmd_scan(args)
+    if args.command == "axis":
+        return cmd_axis(args)
     if args.command == "list-extractors":
         return cmd_list_extractors(args)
     if args.command == "verify":
