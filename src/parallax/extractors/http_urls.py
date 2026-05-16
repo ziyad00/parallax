@@ -1,8 +1,13 @@
 """HTTP URL extractor.
 
 Resources are URL paths (host stripped, dynamic segments collapsed).
-Each text file emits one :class:`~parallax.core.Unit` covering the
-URLs it references.
+Each file emits **one Unit per distinct URL it references** with
+``resources={url}``. This is what lets every file touching ``/foo/{id}``
+land in the same cluster — even if those files reference completely
+different supersets of other URLs. The trade-off versus a per-file
+resource-bag model is that singleton clusters (a URL mentioned in
+exactly one file) become meaningful: that's typically a frontend
+calling an endpoint the backend doesn't expose, or vice versa.
 """
 
 from __future__ import annotations
@@ -21,8 +26,11 @@ _URL_RE = re.compile(
         # Absolute URL: https://host/path
         https?://[^\s"'`<>{}\\]+
         |
-        # Path-only: "/v1/foo/bar" — at least 2 segments, no spaces/quotes
-        /[a-zA-Z][\w./\-{}:]*(?:/[\w./\-{}:]+)+
+        # Path-only: "/v1/foo/bar" — at least 2 segments, no spaces/quotes.
+        # The character class includes ``$`` so Dart string interpolation
+        # (``/foo/$bar`` or ``/foo/${bar}``) is captured as one token rather
+        # than split at the ``$`` boundary.
+        /[a-zA-Z][\w./\-{}:$]*(?:/[\w./\-{}:$]+)+
     )
     """,
     re.VERBOSE,
@@ -32,6 +40,7 @@ _URL_RE = re.compile(
 DEFAULT_TEXT_EXTENSIONS = {
     ".py", ".pyi",
     ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    ".dart",
     ".go", ".rs", ".java", ".kt", ".rb", ".php",
     ".sh", ".bash", ".zsh",
     ".yaml", ".yml", ".json", ".toml",
@@ -81,27 +90,46 @@ class HttpUrlExtractor(Extractor):
             except (OSError, UnicodeDecodeError):
                 continue
 
-            urls = set()
+            # First occurrence of each normalized URL keeps its line
+            # number so the location string is clickable in editors and
+            # SARIF reporters.
+            first_line: dict[str, int] = {}
             for match in _URL_RE.finditer(text):
                 resource = self.normalize_url(match.group(0))
-                if resource:
-                    urls.add(resource)
+                if not resource or resource in first_line:
+                    continue
+                first_line[resource] = text.count("\n", 0, match.start()) + 1
 
-            if urls:
-                rel = path.relative_to(root).as_posix()
+            if not first_line:
+                continue
+
+            rel = path.relative_to(root).as_posix()
+            language = _language_from_suffix(path.suffix)
+            for url, line in first_line.items():
                 yield Unit(
-                    location=rel,
-                    name=path.name,
-                    resources=frozenset(urls),
-                    language=_language_from_suffix(path.suffix),
+                    location=f"{rel}:{line}",
+                    name=url,
+                    resources=frozenset({url}),
+                    language=language,
                 )
 
     def normalize_url(self, raw: str) -> str:
         """Reduce a raw URL match to a stable path identifier.
 
-        Strips scheme + host, drops query/fragment, replaces numeric
-        path segments with ``{id}``, and removes any trailing slash.
-        Override for stricter or looser matching.
+        Strips scheme + host, drops query/fragment, collapses every kind
+        of dynamic path segment to the canonical ``{id}`` placeholder, and
+        removes any trailing slash. Override for stricter or looser
+        matching.
+
+        Dynamic-segment forms all collapse to ``{id}``:
+        - Numeric: ``/123``
+        - OpenAPI / FastAPI braces: ``/{user_id}``
+        - Dart interpolation: ``/$userId``, ``/${userId}``
+
+        This is what lets a FastAPI route ``/follow/requests/{user_id}``
+        cluster with a Dart call site ``/follow/requests/$userId`` — they
+        normalize to the same identifier even though the source code
+        spelling diverges across languages.
         """
         path = raw
         if "://" in path:
@@ -111,6 +139,16 @@ class HttpUrlExtractor(Extractor):
         for sep in "?#":
             if sep in path:
                 path = path.split(sep, 1)[0]
+        # Dart ``${name}`` first; do it before the bare-``$name`` form so
+        # the closing brace is consumed atomically.
+        path = re.sub(r"/\$\{[^}/]+\}", "/{id}", path)
+        # Dart bare interpolation ``$name`` — must start with a letter or
+        # underscore so we don't munch query-style ``$1`` (which is
+        # already covered by the numeric rule below).
+        path = re.sub(r"/\$[A-Za-z_]\w*", "/{id}", path)
+        # OpenAPI / FastAPI braces ``{user_id}``.
+        path = re.sub(r"/\{[^}/]+\}", "/{id}", path)
+        # Numeric segments ``/123``.
         path = re.sub(r"/\d+", "/{id}", path)
         if path.endswith("/") and len(path) > 1:
             path = path[:-1]
@@ -121,6 +159,7 @@ _SUFFIX_TO_LANG = {
     ".py": "python", ".pyi": "python",
     ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript", ".cjs": "javascript",
     ".ts": "typescript", ".tsx": "typescript",
+    ".dart": "dart",
     ".go": "go", ".rs": "rust", ".java": "java", ".kt": "kotlin",
     ".rb": "ruby", ".php": "php",
     ".sh": "shell", ".bash": "shell", ".zsh": "shell",
