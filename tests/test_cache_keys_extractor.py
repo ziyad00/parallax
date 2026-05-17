@@ -136,3 +136,57 @@ await cache.invalidate_user(user_id, "unread:*")
 
 def _resources(units):
     return set().union(*(u.resources for u in units))
+
+
+def test_resolves_variable_assigned_to_fstring(tmp_path):
+    # The real circles-be pattern: ``cache_key = f"liked_checkin:{id}"``
+    # then ``cache.set_user(user_id, cache_key, ...)``. Without scope
+    # tracing the set side was invisible and the corresponding
+    # invalidate looked like an orphan.
+    write(tmp_path, "repo.py", """
+async def toggle_like(user_id, checkin_id, liked):
+    cache_key = f"liked_checkin:{checkin_id}"
+    if liked:
+        await cache.set_user(user_id, cache_key, liked, ttl=300)
+    else:
+        await cache.invalidate_user(user_id, f"liked_checkin:{checkin_id}")
+""")
+
+    units = list(CacheKeysExtractor().extract(tmp_path))
+    resources = _resources(units)
+    # Both set and invalidate resolved to the same prefix.
+    assert "set:liked_checkin" in resources
+    assert "invalidate:liked_checkin" in resources
+
+
+def test_module_level_cache_calls_still_work(tmp_path):
+    # No enclosing function — falls back to an empty scope.
+    write(tmp_path, "module.py", """
+import asyncio
+asyncio.run(cache.set("module_level_key", 1))
+""")
+
+    units = list(CacheKeysExtractor().extract(tmp_path))
+    assert "set:module_level_key" in _resources(units)
+
+
+def test_variable_only_traced_within_same_function(tmp_path):
+    # Without precise constant propagation across function boundaries,
+    # don't claim to resolve a variable that's only assigned in
+    # another function.
+    write(tmp_path, "module.py", """
+def writer(user_id):
+    cache_key = f"in_writer_only:{user_id}"
+
+def reader(user_id):
+    # cache_key is unbound here — extractor must skip.
+    await cache.set_user(user_id, cache_key, 1)
+""")
+
+    units = list(CacheKeysExtractor().extract(tmp_path))
+    resources = _resources(units)
+    # The literal-prefix-style key still gets recorded as a side
+    # effect of being assigned, but the set call in `reader` doesn't
+    # contribute a set Unit because `cache_key` is unbound there.
+    # The set:in_writer_only resource should NOT appear.
+    assert not any(r.startswith("set:in_writer_only") for r in resources)

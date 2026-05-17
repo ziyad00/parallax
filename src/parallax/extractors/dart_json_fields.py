@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 from ..core import Unit
+from ._field_canon import canonicalize_field
 from .base import Extractor
 
 
@@ -106,10 +107,11 @@ class DartJsonFieldsExtractor(Extractor):
                 seen[key] = text.count("\n", 0, match.start()) + 1
 
             for key, line in seen.items():
+                canon = canonicalize_field(key)
                 yield Unit(
                     location=f"{rel}:{line}",
                     name=key,
-                    resources=frozenset({key}),
+                    resources=frozenset({canon}),
                     language="dart",
-                    extra={"field": key},
+                    extra={"field": key, "raw_field": key},
                 )
