@@ -58,6 +58,21 @@ DEFAULT_IGNORE_DIRS = {
 }
 
 
+# Files matching any of these path fragments are skipped wholesale.
+# Flutter router config files (GoRouter, RouteSettings) declare
+# in-app navigation paths like ``/group/chat`` that look like API URLs
+# but are not. Deep-link handlers do the same for URL-like patterns.
+# Override via ``ignore_path_patterns`` to add project-specific
+# noise sources.
+DEFAULT_IGNORE_PATH_PATTERNS = (
+    "/router.dart",
+    "/routes.dart",
+    "/app_router.dart",
+    "deep_link_service.dart",
+    "deep_link_handler.dart",
+)
+
+
 # A URL that ends in one of these suffixes is almost certainly an import
 # path or relative file reference (e.g.
 # ``/scr/feature/profile/profile_viewmodel.dart``) and not a real HTTP
@@ -89,10 +104,12 @@ class HttpUrlExtractor(Extractor):
         *,
         text_extensions: set[str] | None = None,
         ignore_dirs: set[str] | None = None,
+        ignore_path_patterns: tuple[str, ...] = DEFAULT_IGNORE_PATH_PATTERNS,
         match_path_only: bool = True,
     ) -> None:
         self.text_extensions = text_extensions or DEFAULT_TEXT_EXTENSIONS
         self.ignore_dirs = ignore_dirs or DEFAULT_IGNORE_DIRS
+        self.ignore_path_patterns = tuple(ignore_path_patterns)
         self.match_path_only = match_path_only
 
     def extract(self, root: Path) -> Iterable[Unit]:
@@ -105,6 +122,9 @@ class HttpUrlExtractor(Extractor):
             if any(part in self.ignore_dirs for part in path.parts):
                 continue
             if path.suffix not in self.text_extensions:
+                continue
+            posix = path.as_posix()
+            if any(pat in posix for pat in self.ignore_path_patterns):
                 continue
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")

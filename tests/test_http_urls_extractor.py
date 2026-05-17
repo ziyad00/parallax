@@ -188,3 +188,41 @@ def test_url_inside_string_is_not_a_comment(tmp_path):
     units = list(HttpUrlExtractor().extract(tmp_path))
     resources = set().union(*(u.resources for u in units))
     assert "/v1/charges" in resources
+
+
+def test_skips_flutter_router_files(tmp_path):
+    # Flutter app-routing files declare in-app navigation paths
+    # like ``/group/chat`` that look like API URLs but aren't.
+    write(tmp_path, "lib/scr/core/router/router.dart", """
+final routes = [
+  GoRoute(path: '/group/chat'),
+  GoRoute(path: '/group/info/:id'),
+];
+""")
+    write(tmp_path, "lib/scr/core/data/deep_link_service.dart", """
+final patterns = ['/link/profile/:id', '/link/checkin/:id'];
+""")
+    write(tmp_path, "lib/scr/feature/x/data.dart", """
+final apiUrl = "/api/users/{id}/posts";
+""")
+
+    units = list(HttpUrlExtractor().extract(tmp_path))
+    resources = set().union(*(u.resources for u in units))
+    # Real API URL is kept.
+    assert "/api/users/{id}/posts" in resources
+    # Router and deep-link paths are skipped.
+    assert not any(r.startswith("/group/") for r in resources)
+    assert not any(r.startswith("/link/") for r in resources)
+
+
+def test_router_ignore_patterns_are_overridable(tmp_path):
+    # The router-file skip list is project-tunable.
+    write(tmp_path, "lib/scr/core/router/router.dart", """
+final url = "/some/api/path";
+""")
+
+    units = list(
+        HttpUrlExtractor(ignore_path_patterns=()).extract(tmp_path)
+    )
+    resources = set().union(*(u.resources for u in units))
+    assert "/some/api/path" in resources

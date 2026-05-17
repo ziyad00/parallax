@@ -53,3 +53,42 @@ final w = json['${prefix}suffix'];
     # NOT captured.
     keys = _resources(units)
     assert "someKey" not in keys
+
+
+def test_skips_local_storage_files(tmp_path):
+    # Local-cache helpers persist a class to disk via toJson/fromJson
+    # in a shape that has nothing to do with the wire API. Skip them
+    # so the orphan signal isn't drowned in cache-shape noise.
+    write(tmp_path, "feature/chat/data/data_sources/local/message_local_storage.dart", """
+class MessageLocalStorage {
+  Map<String, dynamic> toJson() => {'backendId': id, 'authorAvatar': avatar};
+  factory MessageLocalStorage.fromJson(Map<String, dynamic> json) =>
+      MessageLocalStorage(backendId: json['backendId'], authorAvatar: json['authorAvatar']);
+}
+""")
+    write(tmp_path, "feature/profile/wire_model.dart", """
+class ProfileResponse {
+  factory ProfileResponse.fromJson(Map<String, dynamic> json) =>
+      ProfileResponse(name: json['name']);
+}
+""")
+
+    units = list(DartJsonFieldsExtractor().extract(tmp_path))
+    resources = _resources(units)
+    # Wire model survives.
+    assert "name" in resources
+    # Local-storage keys are filtered.
+    assert "backendId" not in resources
+    assert "authorAvatar" not in resources
+
+
+def test_ignore_path_patterns_is_overridable(tmp_path):
+    # The default skip list is project-tunable.
+    write(tmp_path, "thing_local_storage.dart", """
+final x = json['kept_after_override'];
+""")
+
+    units = list(
+        DartJsonFieldsExtractor(ignore_path_patterns=()).extract(tmp_path)
+    )
+    assert _resources(units) == {"kept_after_override"}

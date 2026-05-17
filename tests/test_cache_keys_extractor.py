@@ -79,3 +79,60 @@ await cache.set(compute_key(user_id), value)
     units = list(CacheKeysExtractor().extract(tmp_path))
     # Computed keys aren't comparable — extractor stays silent.
     assert units == []
+
+
+def test_wildcard_invalidate_pairs_with_concrete_set_keys(tmp_path):
+    # Real circles-be pattern: writes go to ``unread:dm`` and
+    # ``unread:group`` individually, but invalidation uses a single
+    # wildcard ``unread:*``. Without expansion this looked like two
+    # set-without-invalidator orphans. With expansion the wildcard
+    # invalidate emits one synthetic Unit per covered set key, so the
+    # cluster surfaces the real symmetry.
+    write(tmp_path, "writer.py", """
+await cache.set_user(user_id, "unread:dm", count)
+await cache.set_user(user_id, "unread:group", count)
+""")
+    write(tmp_path, "evictor.py", """
+await cache.invalidate_user(user_id, "unread:*")
+""")
+
+    units = list(CacheKeysExtractor().extract(tmp_path))
+    resources = _resources(units)
+    # Both concrete writes have explicit set Units.
+    assert "set:unread:dm" in resources
+    assert "set:unread:group" in resources
+    # The wildcard call itself emits its literal resource AND one
+    # synthetic invalidate per concrete set key it covers.
+    assert "invalidate:unread:*" in resources
+    assert "invalidate:unread:dm" in resources
+    assert "invalidate:unread:group" in resources
+
+    # The synthetic Units carry a ``via_wildcard`` marker so consumers
+    # can distinguish them from literal invalidate calls.
+    synthetic = [
+        u for u in units
+        if u.name in {"invalidate:unread:dm", "invalidate:unread:group"}
+    ]
+    assert all(u.extra.get("via_wildcard") == "unread:*" for u in synthetic)
+
+
+def test_wildcard_does_not_match_across_segment_boundary(tmp_path):
+    # ``unread:*`` covers ``unread:dm`` but must NOT cover
+    # ``unreadable`` — the wildcard sits at a colon boundary.
+    write(tmp_path, "writer.py", """
+await cache.set_user(user_id, "unread:dm", count)
+await cache.set_user(user_id, "unreadable", value)
+""")
+    write(tmp_path, "evictor.py", """
+await cache.invalidate_user(user_id, "unread:*")
+""")
+
+    units = list(CacheKeysExtractor().extract(tmp_path))
+    resources = _resources(units)
+    assert "invalidate:unread:dm" in resources
+    # ``unreadable`` must remain an orphan — wildcard does not cover it.
+    assert "invalidate:unreadable" not in resources
+
+
+def _resources(units):
+    return set().union(*(u.resources for u in units))
