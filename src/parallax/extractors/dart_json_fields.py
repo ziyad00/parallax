@@ -31,6 +31,21 @@ DEFAULT_IGNORE_DIRS = {
     "node_modules",
 }
 
+# Files matching any of these path fragments are skipped wholesale.
+# Local-storage / cache helper classes round-trip JSON for on-disk
+# persistence in a shape that has nothing to do with the wire format,
+# and they bury the real-drift signal under camelCase / snake_case
+# duplicates that are correct by design. Override via the
+# ``ignore_path_patterns`` constructor arg if your codebase needs
+# something different.
+DEFAULT_IGNORE_PATH_PATTERNS = (
+    "_local_storage.dart",
+    "/local/",  # any class under data_sources/local/ etc.
+    "_cache_helper.dart",
+    "ProfileCacheHelper.dart",
+    "TrendingPageCacheHelper.dart",
+)
+
 
 # Matches:
 #   json['field']
@@ -55,8 +70,14 @@ class DartJsonFieldsExtractor(Extractor):
 
     name = "dart-json-fields"
 
-    def __init__(self, *, ignore_dirs: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        ignore_dirs: set[str] | None = None,
+        ignore_path_patterns: Iterable[str] = DEFAULT_IGNORE_PATH_PATTERNS,
+    ) -> None:
         self.ignore_dirs = ignore_dirs or DEFAULT_IGNORE_DIRS
+        self.ignore_path_patterns = tuple(ignore_path_patterns)
 
     def extract(self, root: Path) -> Iterable[Unit]:
         return list(self._scan(root))
@@ -64,6 +85,9 @@ class DartJsonFieldsExtractor(Extractor):
     def _walk(self, root: Path) -> Iterator[Path]:
         for p in root.rglob("*.dart"):
             if any(part in self.ignore_dirs for part in p.parts):
+                continue
+            posix = p.as_posix()
+            if any(pat in posix for pat in self.ignore_path_patterns):
                 continue
             yield p
 

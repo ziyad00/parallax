@@ -7,14 +7,26 @@ key, or vice versa — the result is stale-read bugs that survive every
 unit test, because the test path either always writes or always reads.
 
 This extractor emits one Unit per recognised cache call. Resources
-encode both the *operation* and the *key prefix*, so a missing
-counterpart shows up as a singleton cluster::
+encode both the *operation* and the *key*, so a missing counterpart
+shows up as a singleton cluster::
 
     Set: ``set:profile_counts``
     Invalidate: ``invalidate:profile_counts``
 
 Both touching ``profile_counts`` cluster together — symmetric.
 Either appearing alone is suspicious.
+
+**Wildcard invalidates.** A call like
+``cache.invalidate_user(uid, "unread:*")`` is a Redis-style pattern
+invalidate that covers every key matching ``unread:*``. The extractor
+runs two passes: pass 1 collects all literal set keys; pass 2 emits
+the invalidate Unit AND one synthetic-expansion Unit per set key the
+wildcard covers. Concretely, an ``invalidate:unread:*`` call paired
+with ``set:unread:dm`` and ``set:unread:group`` somewhere else will
+produce additional ``invalidate:unread:dm`` and
+``invalidate:unread:group`` Units at the wildcard site (with
+``extra["via_wildcard"] = True``) so they cluster with their
+counterparts.
 
 Recognised call shapes (configurable via ``call_specs``):
 
@@ -99,31 +111,82 @@ class CacheKeysExtractor(Extractor):
             yield p
 
     def _scan(self, root: Path) -> Iterator[Unit]:
+        # Pass 1: collect every literal set key we'll see. This lets
+        # pass 2 expand each wildcard invalidate (``X:*``) into one
+        # synthetic Unit per set key it covers, so the cluster output
+        # surfaces the symmetry correctly instead of flagging
+        # wildcard-covered keys as "set without invalidator".
+        set_keys: set[str] = set()
         for py in self._walk(root):
-            try:
-                tree = ast.parse(py.read_text(encoding="utf-8"))
-            except (SyntaxError, UnicodeDecodeError, OSError):
-                continue
+            for call, spec in self._calls_in_file(py):
+                if spec.op != "set":
+                    continue
+                key = _extract_literal_prefix(call, spec.key_arg_index)
+                if key:
+                    set_keys.add(key)
+
+        for py in self._walk(root):
             rel = py.relative_to(root).as_posix()
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                func = node.func
-                if not isinstance(func, ast.Attribute):
-                    continue
-                spec = self._specs_by_name.get(func.attr)
-                if spec is None:
-                    continue
-                key = _extract_literal_prefix(node, spec.key_arg_index)
+            for call, spec in self._calls_in_file(py):
+                key = _extract_literal_prefix(call, spec.key_arg_index)
                 if key is None:
                     continue
+                location = f"{rel}:{call.lineno}"
                 yield Unit(
-                    location=f"{rel}:{node.lineno}",
+                    location=location,
                     name=f"{spec.op}:{key}",
                     resources=frozenset({f"{spec.op}:{key}"}),
                     language="python",
-                    extra={"op": spec.op, "key": key, "method": func.attr},
+                    extra={"op": spec.op, "key": key, "method": spec.method_name},
                 )
+
+                if spec.op == "invalidate" and key.endswith(":*"):
+                    prefix = key[:-2]  # strip the trailing ":*"
+                    for set_key in set_keys:
+                        if not _wildcard_covers(prefix, set_key):
+                            continue
+                        yield Unit(
+                            location=location,
+                            name=f"invalidate:{set_key}",
+                            resources=frozenset({f"invalidate:{set_key}"}),
+                            language="python",
+                            extra={
+                                "op": "invalidate",
+                                "key": set_key,
+                                "method": spec.method_name,
+                                "via_wildcard": key,
+                            },
+                        )
+
+    def _calls_in_file(self, py: Path) -> Iterator[tuple[ast.Call, CacheCallSpec]]:
+        """Yield every ``(Call node, CacheCallSpec)`` pair in ``py``."""
+        try:
+            tree = ast.parse(py.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError, OSError):
+            return
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not isinstance(func, ast.Attribute):
+                continue
+            spec = self._specs_by_name.get(func.attr)
+            if spec is None:
+                continue
+            yield node, spec
+
+
+def _wildcard_covers(prefix: str, key: str) -> bool:
+    """True if ``key`` is matched by a Redis-style ``prefix:*`` pattern.
+
+    ``prefix == ""`` (i.e. ``invalidate:*``) covers any key. Otherwise
+    the key must start with ``prefix:`` so the wildcard sits at a
+    segment boundary — ``unread:*`` covers ``unread:dm`` but not
+    ``unreadable``.
+    """
+    if not prefix:
+        return True
+    return key.startswith(prefix + ":") or key == prefix
 
 
 def _extract_literal_prefix(call: ast.Call, arg_index: int) -> str | None:
