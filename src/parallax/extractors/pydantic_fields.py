@@ -1,10 +1,23 @@
 """Pydantic / dataclass field extractor.
 
 Walks Python source for ``class X(BaseModel):`` (and ``@dataclass``)
-declarations and emits one :class:`~parallax.core.Unit` per declared
-field. Resource is the field name only — so a backend Pydantic field
-``is_followed`` clusters with any Dart ``json['is_followed']`` access
-emitted by ``dart-json-fields``.
+declarations AND inline dict literals passed to WebSocket-style
+broadcast helpers, and emits one :class:`~parallax.core.Unit` per
+declared / sent field. Resource is the field name canonicalised to
+snake_case so ``isFollowed`` (Dart) and ``is_followed`` (Python)
+cluster together.
+
+Sources covered:
+
+1. ``class X(BaseModel):`` — Pydantic schemas
+2. ``@dataclass`` — Python dataclasses
+3. Plain classes whose name ends in ``Response`` / ``Schema`` /
+   ``Model`` / ``Out`` / ``DTO`` / ``Payload`` — heuristic for
+   wire-shape classes that don't inherit Pydantic
+4. **Inline dict literals** passed positionally to broadcast helpers
+   (``broadcast_to_user``, ``send_json``, ``send_realtime_update``,
+   ``broadcast_event``). These are real-time payload schemas that
+   never become Pydantic classes but the frontend still reads them.
 
 Singleton clusters in either direction indicate response-shape drift:
 
@@ -25,6 +38,7 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 from ..core import Unit
+from ._field_canon import canonicalize_field
 from .base import Extractor
 
 
@@ -51,6 +65,20 @@ RESPONSE_NAME_HINTS = (
 )
 
 
+# Function names whose first dict-literal argument is treated as a
+# real-time payload shape. These cover the broadcast helpers in
+# circles-be (``broadcast_to_user``, ``send_json``,
+# ``send_realtime_update``, ``broadcast_event``). Override via the
+# extractor constructor.
+BROADCAST_FUNCTION_NAMES = (
+    "broadcast_to_user",
+    "broadcast_event",
+    "broadcast_message",
+    "send_realtime_update",
+    "send_json",
+)
+
+
 class PydanticFieldsExtractor(Extractor):
     """Emit one Unit per declared field on a Pydantic / dataclass / response
     shape class."""
@@ -62,9 +90,11 @@ class PydanticFieldsExtractor(Extractor):
         *,
         ignore_dirs: set[str] | None = None,
         response_name_hints: tuple[str, ...] = RESPONSE_NAME_HINTS,
+        broadcast_function_names: tuple[str, ...] = BROADCAST_FUNCTION_NAMES,
     ) -> None:
         self.ignore_dirs = ignore_dirs or DEFAULT_IGNORE_DIRS
         self.response_name_hints = response_name_hints
+        self.broadcast_function_names = tuple(broadcast_function_names)
 
     def extract(self, root: Path) -> Iterable[Unit]:
         return list(self._scan(root))
@@ -82,22 +112,68 @@ class PydanticFieldsExtractor(Extractor):
             except (SyntaxError, UnicodeDecodeError, OSError):
                 continue
             rel = py.relative_to(root).as_posix()
+
             for node in ast.walk(tree):
-                if not isinstance(node, ast.ClassDef):
+                if isinstance(node, ast.ClassDef) and self._is_response_shape(node):
+                    for item in node.body:
+                        field = _field_name(item)
+                        if not field:
+                            continue
+                        canon = canonicalize_field(field)
+                        yield Unit(
+                            location=f"{rel}:{item.lineno}",
+                            name=f"{node.name}.{field}",
+                            resources=frozenset({canon}),
+                            language="python",
+                            extra={
+                                "class": node.name,
+                                "field": field,
+                                "raw_field": field,
+                            },
+                        )
+                elif isinstance(node, ast.Call):
+                    yield from self._inline_dict_units(node, rel)
+
+    def _inline_dict_units(self, call: ast.Call, rel: str) -> Iterator[Unit]:
+        """Emit Units for the keys of a dict literal passed positionally
+        to a known broadcast helper.
+
+        Catches the ``broadcast_to_user(to, {"type": ..., "from_user":
+        ..., ...})`` pattern where the wire shape lives inline rather
+        than in a Pydantic class. Nested dicts are NOT recursed — the
+        top-level keys are what the frontend reads.
+        """
+        callee = call.func
+        if isinstance(callee, ast.Attribute):
+            fn_name = callee.attr
+        elif isinstance(callee, ast.Name):
+            fn_name = callee.id
+        else:
+            return
+        if fn_name not in self.broadcast_function_names:
+            return
+
+        # Scan positional args for the first dict literal.
+        for arg in call.args:
+            if not isinstance(arg, ast.Dict):
+                continue
+            for key in arg.keys:
+                if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
                     continue
-                if not self._is_response_shape(node):
-                    continue
-                for item in node.body:
-                    field = _field_name(item)
-                    if not field:
-                        continue
-                    yield Unit(
-                        location=f"{rel}:{item.lineno}",
-                        name=f"{node.name}.{field}",
-                        resources=frozenset({field}),
-                        language="python",
-                        extra={"class": node.name, "field": field},
-                    )
+                field = key.value
+                canon = canonicalize_field(field)
+                yield Unit(
+                    location=f"{rel}:{call.lineno}",
+                    name=f"{fn_name}.{field}",
+                    resources=frozenset({canon}),
+                    language="python",
+                    extra={
+                        "broadcast": fn_name,
+                        "field": field,
+                        "raw_field": field,
+                    },
+                )
+            return  # First dict only
 
     def _is_response_shape(self, cls: ast.ClassDef) -> bool:
         # Inherits BaseModel anywhere on the MRO line we can see?
